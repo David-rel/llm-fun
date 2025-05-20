@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import math
 
 class MultiHeadAttention(nn.Module):
@@ -58,24 +59,128 @@ class TransformerBlock(nn.Module):
         
         return hidden_states
 
+class SimpleGPT2(nn.Module):
+    def __init__(self, vocab_size, embedding_dim, num_attention_heads, intermediate_size, num_layers):
+        super().__init__()
+        self.token_embeddings = nn.Embedding(vocab_size, embedding_dim)
+        self.position_embeddings = nn.Embedding(100, embedding_dim) # Max 100 positions
+        
+        self.transformer_blocks = nn.ModuleList([
+            TransformerBlock(embedding_dim, num_attention_heads, intermediate_size)
+            for _ in range(num_layers)
+        ])
+        
+        self.final_layer_norm = nn.LayerNorm(embedding_dim)
+        self.output_projection = nn.Linear(embedding_dim, vocab_size)
+        
+    def forward(self, input_ids, attention_mask=None):
+        sequence_length = input_ids.size(1)
+        
+        # Get token embeddings
+        hidden_states = self.token_embeddings(input_ids)
+        
+        # Add position embeddings
+        position_ids = torch.arange(0, sequence_length, dtype=torch.long, device=input_ids.device)
+        position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
+        hidden_states = hidden_states + self.position_embeddings(position_ids)
+        
+        # Apply transformer blocks
+        for block in self.transformer_blocks:
+            hidden_states = block(hidden_states, attention_mask)
+            
+        # Final layer norm and projection
+        hidden_states = self.final_layer_norm(hidden_states)
+        logits = self.output_projection(hidden_states)
+        
+        return logits
+
+def create_simple_tokenizer(text):
+    """Create a very simple character-level tokenizer"""
+    chars = sorted(list(set(text)))
+    vocab = {char: i for i, char in enumerate(chars)}
+    vocab['<pad>'] = len(vocab)
+    
+    # Add inverse mapping
+    id_to_token = {i: char for char, i in vocab.items()}
+    
+    return vocab, id_to_token
+
 def main():
-    # Example usage
-    batch_size = 2
-    sequence_length = 10
-    embedding_dim = 256
-    num_attention_heads = 4
-    intermediate_size = 1024
+    # Our simple training text
+    text = "the cat sat on the mat"
     
-    # Create a sample input
-    input_tensor = torch.randn(batch_size, sequence_length, embedding_dim)
+    # Create tokenizer and vocabulary
+    vocab, id_to_token = create_simple_tokenizer(text)
+    vocab_size = len(vocab)
     
-    # Create transformer block
-    transformer = TransformerBlock(embedding_dim, num_attention_heads, intermediate_size)
+    # Tokenize input
+    input_ids = torch.tensor([[vocab[char] for char in text]], dtype=torch.long)
     
-    # Forward pass
-    output_tensor = transformer(input_tensor)
-    print(f"Input shape: {input_tensor.shape}")
-    print(f"Output shape: {output_tensor.shape}")
+    # Model parameters
+    embedding_dim = 64
+    num_attention_heads = 2
+    intermediate_size = 128
+    num_layers = 2
+    
+    # Create model
+    model = SimpleGPT2(vocab_size, embedding_dim, num_attention_heads, intermediate_size, num_layers)
+    
+    # Training parameters
+    num_epochs = 1000
+    learning_rate = 0.001
+    
+    # Optimizer
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    
+    # Training loop
+    for epoch in range(num_epochs):
+        # Forward pass
+        logits = model(input_ids)
+        
+        # Prepare targets (shifted right)
+        targets = torch.zeros_like(input_ids)
+        targets[0, :-1] = input_ids[0, 1:]
+        targets[0, -1] = input_ids[0, 0]  # Wrap around for simplicity
+        
+        # Compute loss
+        loss = F.cross_entropy(logits.view(-1, vocab_size), targets.view(-1))
+        
+        # Backward pass
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
+        # Print progress every 100 epochs
+        if (epoch + 1) % 100 == 0:
+            print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item():.4f}")
+    
+    # Generate text after training
+    print("\nGenerating text:")
+    
+    # Start with the first character
+    input_char = "t"
+    input_id = torch.tensor([[vocab[input_char]]], dtype=torch.long)
+    generated_text = input_char
+    
+    # Generate 20 more characters
+    with torch.no_grad():
+        for _ in range(20):
+            # Get predictions
+            logits = model(input_id)
+            next_token_logits = logits[0, -1, :]
+            
+            # Get the most likely next token
+            next_token_id = torch.argmax(next_token_logits).item()
+            next_char = id_to_token[next_token_id]
+            
+            # Add to generated text
+            generated_text += next_char
+            
+            # Update input for next iteration
+            input_id = torch.cat([input_id, torch.tensor([[next_token_id]])], dim=1)
+    
+    print(f"Input: {input_char}")
+    print(f"Generated: {generated_text}")
 
 if __name__ == "__main__":
     main() 
