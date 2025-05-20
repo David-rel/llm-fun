@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+import json
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, embedding_dim, num_attention_heads):
@@ -60,10 +61,10 @@ class TransformerBlock(nn.Module):
         return hidden_states
 
 class SimpleGPT2(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, num_attention_heads, intermediate_size, num_layers):
+    def __init__(self, vocab_size, embedding_dim, num_attention_heads, intermediate_size, num_layers, positions):
         super().__init__()
         self.token_embeddings = nn.Embedding(vocab_size, embedding_dim)
-        self.position_embeddings = nn.Embedding(100, embedding_dim) # Max 100 positions
+        self.position_embeddings = nn.Embedding(positions, embedding_dim)
         
         self.transformer_blocks = nn.ModuleList([
             TransformerBlock(embedding_dim, num_attention_heads, intermediate_size)
@@ -93,6 +94,10 @@ class SimpleGPT2(nn.Module):
         logits = self.output_projection(hidden_states)
         
         return logits
+    
+    def grab_embeddings(self):
+        self.token_embeddings = 0
+        self.position_embeddings = 0
 
 def create_simple_tokenizer(text):
     """Create a very simple character-level tokenizer"""
@@ -105,26 +110,34 @@ def create_simple_tokenizer(text):
     
     return vocab, id_to_token
 
-def main():
-    # Our simple training text
-    text = "the cat sat on the mat"
+def create_text(input_char,vocab,id_to_token,model):
+    # Generate text after training
+    print("\nGenerating text:")
     
-    # Create tokenizer and vocabulary
-    vocab, id_to_token = create_simple_tokenizer(text)
-    vocab_size = len(vocab)
+    # Start with the first character
+    input_id = torch.tensor([[vocab[input_char]]], dtype=torch.long)
+    generated_text = input_char
     
-    # Tokenize input
-    input_ids = torch.tensor([[vocab[char] for char in text]], dtype=torch.long)
+    # Generate 20 more characters
+    with torch.no_grad():
+        for _ in range(100):
+            # Get predictions
+            logits = model(input_id)
+            next_token_logits = logits[0, -1, :]
+            
+            # Get the most likely next token
+            next_token_id = torch.argmax(next_token_logits).item()
+            next_char = id_to_token[next_token_id]
+            
+            # Add to generated text
+            generated_text += next_char
+            
+            # Update input for next iteration
+            input_id = torch.cat([input_id, torch.tensor([[next_token_id]])], dim=1)
     
-    # Model parameters
-    embedding_dim = 64
-    num_attention_heads = 2
-    intermediate_size = 128
-    num_layers = 2
-    
-    # Create model
-    model = SimpleGPT2(vocab_size, embedding_dim, num_attention_heads, intermediate_size, num_layers)
-    
+    return generated_text
+
+def train(model, input_ids, vocab_size):
     # Training parameters
     num_epochs = 1000
     learning_rate = 0.001
@@ -134,8 +147,12 @@ def main():
     
     # Training loop
     for epoch in range(num_epochs):
+
         # Forward pass
         logits = model(input_ids)
+
+        #print(f"Logits: {logits}")
+        #print(f"Logits length: {len(logits[0])}")
         
         # Prepare targets (shifted right)
         targets = torch.zeros_like(input_ids)
@@ -153,33 +170,49 @@ def main():
         # Print progress every 100 epochs
         if (epoch + 1) % 100 == 0:
             print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item():.4f}")
+
+    with open('weights.json', 'w') as f:
+        json.dump(model.token_embeddings.weight, f)
+
+    with open('positions.json', 'w') as f:
+        json.dump(model.position_embeddings.weight, f)
+
+def main():
+    # Our simple training text
+    with open("test.txt", "r") as f:
+        text = f.read() 
     
-    # Generate text after training
-    print("\nGenerating text:")
+    positions = 512
+
+    text = text[0:positions]
     
-    # Start with the first character
-    input_char = "t"
-    input_id = torch.tensor([[vocab[input_char]]], dtype=torch.long)
-    generated_text = input_char
+    # Create tokenizer and vocabulary
+    vocab, id_to_token = create_simple_tokenizer(text)
+    vocab_size = len(vocab)
     
-    # Generate 20 more characters
-    with torch.no_grad():
-        for _ in range(20):
-            # Get predictions
-            logits = model(input_id)
-            next_token_logits = logits[0, -1, :]
-            
-            # Get the most likely next token
-            next_token_id = torch.argmax(next_token_logits).item()
-            next_char = id_to_token[next_token_id]
-            
-            # Add to generated text
-            generated_text += next_char
-            
-            # Update input for next iteration
-            input_id = torch.cat([input_id, torch.tensor([[next_token_id]])], dim=1)
+    # Tokenize input
+    input_ids = torch.tensor([[vocab[char] for char in text]], dtype=torch.long)
     
-    print(f"Input: {input_char}")
+    # Model parameters
+    embedding_dim = 128
+    num_attention_heads = 2
+    intermediate_size = 128
+    num_layers = 2
+    
+    # Create model
+    model = SimpleGPT2(vocab_size, embedding_dim, num_attention_heads, intermediate_size, num_layers, positions)
+    
+    
+    # Training
+    train(model, input_ids, vocab_size)
+
+
+    # Text Generation
+    input_text = "t"
+    generated_text = create_text(input_text,vocab,id_to_token,model)
+    
+
+    print(f"Input: {input_text}")
     print(f"Generated: {generated_text}")
 
 if __name__ == "__main__":
